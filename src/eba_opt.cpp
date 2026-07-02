@@ -8,42 +8,6 @@
 #include <queue>
 #include <unordered_set>
 
-// ============================================================
-// eba_opt.cpp — CORRECTED + OPTIMISED EBA (use this, not eba.cpp)
-//
-// BUG fixed vs eba.cpp
-// --------------------
-// eba.cpp has a stale-cun_arr bug: when a node v is pushed to S
-// and later popped, the "for (int u : v_cn) cun_arr[u] = true"
-// restore at the parent level leaves cun_arr[v] = true for any
-// v that was itself in Cun.  At deeper recursion levels this
-// stale true causes v (already in S) to re-enter v_cn → new_Cr
-// and be pushed to S again.
-//
-// Two consequences:
-//   1. best_size is inflated by the duplicate count, causing
-//      premature termination and missed optimal solutions.
-//   2. The reported solution contains duplicate node IDs, so
-//      the true unique-node count (and true clique quality)
-//      is lower than reported.
-//
-// Fix: added !in_S[u] guards when building v_cn, new_Cr, and
-// new_Cun so that nodes already in S are never re-admitted as
-// candidates.  This also enables the optimisations below.
-//
-// OPT-1: Incremental deg_in_S tracking
-// --------------------------------------
-// Because S is always connected (every Cr node is adjacent to
-// at least one current S-member) and never contains duplicates
-// (after the fix above), we can maintain deg_in_S[] and in_S[]
-// incrementally (O(deg(v)) per push/pop) and replace the per-call
-// isFlexiClique() check in tryUpdate with a simple O(|S|) loop.
-//
-// OPT-2: Replace unordered_set with g_active in runEBA
-// -----------------------------------------------------
-// local_adj_deg initialisation uses g_active[] directly instead
-// of building a temporary unordered_set.
-// ============================================================
 
 struct EBAState {
     const Graph& G;
@@ -53,45 +17,30 @@ struct EBAState {
     int best_size = 0;
     int theta = 0;
 
-    // Global activity mask and degree after Rule-6 pruning.
     std::vector<bool> g_active;
     std::vector<int>  g_adj_deg;
-
-    // Adjusted degree within the current branch scope.
     std::vector<int> local_adj_deg;
-
-    // Min distance from the nearest node in S.
     std::vector<int> dist_S;
 
     long long branches = 0;
-
-    // Seeded mode (community search): when >=0, the root level branches ONLY on
-    // this vertex, so every explored S contains it -> max flexi-clique containing
-    // `force_seed`.  Children still receive the full Cun, so all pruning machinery
-    // (dist_S BFS, deg_in_S, Rules 3/4) works unchanged.
     int force_seed = -1;
 
-    // Optional anytime deadline; when hit, the search unwinds and `best` holds
-    // the best flexi-clique found so far (EBA maintains best monotonically).
     std::chrono::steady_clock::time_point deadline;
     bool has_deadline = false;
     bool timed_out = false;
 
-    // Pre-allocated BFS scratch (reused across recursion levels via touched lists).
     std::vector<bool> bfs_scope_arr;
     std::vector<int>  bfs_dist_arr;
     std::vector<int>  bfs_queue;
     std::vector<int>  bfs_scope_touched;
     std::vector<int>  bfs_dist_touched;
 
-    // Pre-allocated scratch for computeFollowers (reset before return).
     mutable std::vector<bool> removed_sim_arr;
     mutable std::vector<int>  sim_deg_arr;   // INT_MIN = uninitialized
     mutable std::vector<int>  sim_d_touched;
     mutable std::vector<int>  sim_r_touched;
     mutable std::vector<int>  sim_bfs;
 
-    // Cun membership array for O(1) lookup within a recursion level.
     std::vector<bool> cun_arr;
 
     // OPT-1: incremental S-membership and S-internal degree.
@@ -112,7 +61,6 @@ struct EBAState {
 
     void updateTheta() { theta = computeTheta(best_size, tau); }
 
-    // Rule 6: iteratively remove nodes whose global degree falls below theta.
     std::vector<int> globalDegreePrune() {
         std::vector<int> removed;
 #ifndef NO_RULE6
@@ -132,8 +80,6 @@ struct EBAState {
         return removed;
     }
 
-    // Rule 5: simulate removing v and cascade degree drops.
-    // Returns nodes that would be forced below theta (followers).
     std::vector<int> computeFollowers(int v,
                                       const std::vector<bool>& in_scope) const {
         std::vector<int> followers;
@@ -180,10 +126,6 @@ struct EBAState {
         return followers;
     }
 
-    // OPT-1: fast tryUpdate.
-    // S is always connected by EBA's Cr-branching invariant, so we skip
-    // the isConnected() check and use the pre-maintained deg_in_S array
-    // for the degree condition.
     void tryUpdate(const std::vector<int>& S) {
         if ((int)S.size() <= best_size) return;
         int k = (int)S.size();
@@ -192,7 +134,6 @@ struct EBAState {
             for (int v : S)
                 if (deg_in_S[v] < threshold) return;
         }
-        // k == 1: a single node is trivially a valid flexi-clique.
         best      = S;
         best_size = k;
         updateTheta();
@@ -206,24 +147,19 @@ struct EBAState {
                  std::vector<bool>& in_scope) {
         ++branches;
 
-        // Anytime deadline check (seeded community-search mode).
         if (has_deadline && (branches & 4095) == 0 &&
             std::chrono::steady_clock::now() >= deadline) timed_out = true;
         if (timed_out) return;
-
-        // Rules 1 & 2 both need min degree in S; compute once.
         int min_adj_S = INT_MAX;
 #if !defined(NO_RULE1) || !defined(NO_RULE2)
         if (!S.empty())
             for (int v : S) min_adj_S = std::min(min_adj_S, local_adj_deg[v]);
 #endif
 
-        // Rule 1: every node in S must have adjusted degree >= theta.
 #ifndef NO_RULE1
         if (!S.empty() && min_adj_S < theta) return;
 #endif
 
-        // Rule 2: upper bound on achievable size via min-degree inversion.
 #ifndef NO_RULE2
         if (!S.empty()) {
             int max_possible = (int)std::floor(std::pow(min_adj_S + 1.0, 1.0 / tau));
@@ -232,11 +168,6 @@ struct EBAState {
 #endif
 
         if ((int)S.size() + (int)Cr.size() + (int)Cun.size() <= best_size) return;
-
-        // Branch on Cun when S is empty (root), otherwise on Cr.
-        // Seeded mode: at the root, branch ONLY on force_seed so every solution
-        // contains it.  Children still get the full Cun passed below, so the
-        // candidate sets and all distance/degree machinery remain correct.
         std::vector<int> forced_root;
         if (S.empty() && force_seed >= 0) forced_root.push_back(force_seed);
         std::vector<int>& R =
@@ -245,11 +176,7 @@ struct EBAState {
         std::sort(R.begin(), R.end(),
                   [&](int a, int b){ return local_adj_deg[a] < local_adj_deg[b]; });
 #endif
-
-        // Set cun_arr for O(1) Cun-membership queries during this level.
         for (int u : Cun) cun_arr[u] = true;
-
-        // Branch-local undo stacks; hoisted outside the loop and reused via clear().
         std::vector<std::pair<int,int>> branch_deg_undo;
         std::vector<std::pair<int,int>> branch_dist_undo;
         std::vector<int> newly_excluded, dist_pruned;
@@ -315,7 +242,6 @@ struct EBAState {
 
             for (int u : v_cn) cun_arr[u] = true;  // restore before child call
 
-            // Incremental BFS from v to update dist_S for Rules 3 & 4.
 #if !defined(NO_RULE3) || !defined(NO_RULE4)
             static constexpr int BFS_SCOPE_LIMIT = 30000;
             if ((int)S.size() >= 2 ||
@@ -372,14 +298,12 @@ struct EBAState {
             [[maybe_unused]] int H_size =
                 (int)S.size() + (int)new_Cr.size() + (int)new_Cun.size();
 
-            // Rule 4 min_adj: recomputed after S.push_back(v) and follower exclusions.
             [[maybe_unused]] int rule4_min_adj = INT_MAX;
 #ifndef NO_RULE4
             if (!S.empty())
                 for (int s : S) rule4_min_adj = std::min(rule4_min_adj, local_adj_deg[s]);
 #endif
 
-            // Rules 3 & 4: prune candidates whose distance from S is too large.
             auto filterByDist = [&](std::vector<int>& cands) {
                 cands.erase(std::remove_if(cands.begin(), cands.end(), [&](int u) {
                     int du = dist_S[u];
@@ -464,7 +388,6 @@ struct EBAState {
             }
         }
 
-        // Restore sibling-level degree changes and in_D flags.
         for (auto it = sibling_deg_undo.rbegin(); it != sibling_deg_undo.rend(); ++it)
             local_adj_deg[it->first] = it->second;
 
@@ -479,12 +402,7 @@ struct EBAState {
 
 AlgoResult runEBA(const Graph& G, double tau) {
     auto t0 = std::chrono::high_resolution_clock::now();
-
-    // Initialize with the best of NPA and FPA first, prune with Rule 6,
-    // and only then run full-graph Modified Greedy++ on the (typically much
-    // smaller) active subgraph.  Running MGPP on the original 1M-node graph
-    // blew up the initialisation cost; after Rule 6 the active set is small
-    // enough for MGPP to still find improving solutions cheaply.
+    
     AlgoResult fpa_res = runFPA3(G, tau);
     AlgoResult npa_res = runNPA(G, tau);
 
@@ -496,11 +414,8 @@ AlgoResult runEBA(const Graph& G, double tau) {
     state.best_size = (int)init_sol.size();
     state.updateTheta();
 
-    // Rule 6: initial global degree pruning to reduce search space.
     state.globalDegreePrune();
 
-    // Now run MGPP on the Rule-6-pruned subgraph.  May still improve the
-    // initial heuristic and, if so, we re-prune to tighten theta further.
     {
         std::vector<int> mgpp_pruned =
             modifiedGreedyPlusPlus(G, tau, &state.g_active);
@@ -513,11 +428,6 @@ AlgoResult runEBA(const Graph& G, double tau) {
     }
 
 #ifdef NO_RULE6
-    // Ablation fix: without Rule 6, the high theta from the NPA/FPA
-    // heuristic causes Rule 1 to immediately kill branches for low-degree
-    // nodes that Rule 6 would normally have removed. Reset best_size so
-    // the search explores the original graph with theta starting at 0,
-    // giving a meaningful branch count for the Rule 6 ablation.
     state.best_size = 0;
     state.best.clear();
     state.updateTheta();
@@ -534,7 +444,6 @@ AlgoResult runEBA(const Graph& G, double tau) {
         return res;
     }
 
-    // OPT-2: use g_active directly instead of building an unordered_set.
     for (int v : V_prime) {
         int d = 0;
         for (int u : G.adj[v])
@@ -563,13 +472,6 @@ AlgoResult runEBA(const Graph& G, double tau) {
     return res;
 }
 
-// Seeded community search: find the MAXIMUM tau-flexi-clique CONTAINING `seed`
-// within the given (local region) graph.  Exact, but anytime — if timeout_sec is
-// exceeded the best flexi-clique found so far is returned and res.timed_out=true.
-//
-// Unlike runEBA this does NOT use the NPA/FPA/MGPP heuristics: those find a global
-// maximum that may not contain `seed` and would inflate best_size, suppressing the
-// (possibly smaller) maximum-containing-seed.  We start from best={seed}.
 AlgoResult runEBASeeded(const Graph& region, int seed, double tau,
                         double timeout_sec) {
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -588,7 +490,6 @@ AlgoResult runEBASeeded(const Graph& region, int seed, double tau,
                 std::chrono::duration<double>(timeout_sec));
     }
 
-    // local_adj_deg = region-internal degree (all vertices active at start).
     for (int v = 0; v < region.n; ++v) {
         int d = 0;
         for (int u : region.adj[v]) if (state.g_active[u]) ++d;
