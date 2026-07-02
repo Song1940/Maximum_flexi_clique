@@ -1,23 +1,3 @@
-// eba_baselines.cpp — simple exact branching baselines for maximum flexi-clique,
-// to ISOLATE the contribution of Connectivity-Preserving (CP) branching (R6-D3).
-//
-// Both baselines find the EXACT maximum flexi-clique using only the basic pruning
-// shared with CP — Rule 1 (adjusted-degree) + Rule 2 (size bound) + the FPA
-// heuristic lower bound + global degree preprocessing — but DIFFERENT branching,
-// and crucially WITHOUT CP's connectivity-by-construction.  Because candidates are
-// added without regard to adjacency to S, the partial set S may become
-// disconnected, so connectivity must be checked EXPLICITLY whenever S is taken as
-// a solution (CP never needs this).  Rule 3 (diameter) and the margin pivot are
-// CP-specific and intentionally excluded, so the comparison isolates the branching
-// scheme itself (compare against flexi_cum built with NO_DIAMETER NO_PIVOT).
-//
-//   Naive : binary include/exclude on one candidate at a time.
-//   SE    : set-enumeration (FastQC/IterQC-style) — for each candidate in order,
-//           include it and recurse on the strictly-later candidates.
-//
-// Reported in AlgoResult: branches (search-tree nodes) and depth_prunes (reused to
-// carry the number of explicit connectivity checks performed).
-
 #include "eba.h"
 #include "fpa.h"
 #include "fpa3.h"
@@ -81,10 +61,6 @@ struct BaselineSolver {
         best = S; best_size = k;
     }
 
-    // Shared per-node pruning.  Builds the scope mask, applies Rule 1 (on S, fatal;
-    // on candidates, cascade-filter), Rule 2 (size bound), and the incumbent size
-    // bound.  Returns false to prune the node; otherwise `cand` is the reduced
-    // candidate set.  `sm` (S mark) is filled for the caller's tryUpdate.
     bool prune(const std::vector<int>& S, std::vector<int>& cand,
                std::vector<char>& sm) {
         sm.assign(G.n, 0);
@@ -98,7 +74,6 @@ struct BaselineSolver {
         // Rule 1 on S: a forced vertex that can't reach theta kills the node.
         for (int v : S) if (degIn(v, scope) < th) return false;
 
-        // Rule 2: |S| must not exceed F_max = floor((min adj-deg + 1)^{1/tau}).
         if (!S.empty()) {
             int md = INT_MAX;
             for (int v : S) md = std::min(md, degIn(v, scope));
@@ -172,7 +147,6 @@ struct BaselineSolver {
 };
 
 // Global degree prune (paper Rule 1, global form) on a bool active mask: drop
-// vertices that cannot be in any flexi-clique larger than the current incumbent.
 void globalDegPrune(const Graph& G, std::vector<bool>& active, int theta0) {
     std::vector<int> deg(G.n, 0);
     std::queue<int> q;
@@ -198,10 +172,7 @@ AlgoResult runBaseline(const Graph& G, double tau, bool set_enum) {
     BaselineSolver st(G, tau);
     std::vector<bool> active(G.n, true);
 #ifndef NO_WARMSTART
-    // Lower bound IDENTICAL to CP (eba_cum): best of FPA3 / NPA, then Modified
-    // Greedy++ on the pruned subgraph.  Matching this (and the saturation prune in
-    // prune()) makes the CP-vs-SE-vs-Naive comparison isolate the BRANCHING scheme
-    // — same lower bound, same pruning, only the branching differs.
+
     AlgoResult fpa = runFPA3(G, tau);
     AlgoResult npa = runNPA(G, tau);
     std::vector<int> init = fpa.nodes;
@@ -229,9 +200,6 @@ AlgoResult runBaseline(const Graph& G, double tau, bool set_enum) {
         else          st.naive(S, V_prime);
     }
 
-    // st.best is seeded only from VALID heuristic solutions (checked above) and only
-    // grows with valid connected flexi-cliques, so it is always valid; if empty,
-    // no valid flexi-clique was found (return empty rather than an unchecked init).
     res.nodes = st.best;
     res.branches = st.branches;
     res.depth_prunes = st.conn_checks;   // reused field: # explicit connectivity checks
