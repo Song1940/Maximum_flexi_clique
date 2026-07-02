@@ -14,61 +14,14 @@
 #include <cstdlib>
 #endif
 
-// ============================================================
-// eba_cum.cpp — CUMULATIVE CP-BRANCHING EBA (exact maximum flexi-clique)
-//
-// Upgrades the non-cumulative EBA (eba_opt.cpp) to the *cumulative*
-// CP-branching scheme specified in EBA_cumulative_upgrade_spec.md and
-// validated by flexi_reference.py.  Structure mirrors the maximal
-// flexi-clique solver (/home/song/maximal_flexi/flex_cpp.cpp): a
-// SearchNode partition S / Cr / Cun / D, Sym-CP (here: CP-) branching,
-// a saturation (non-degree) prune, and an optional margin pivot.
-//
-// CP-branching (§2.2): order the reachable candidates Cr = <v_0..v_{k-1}>.
-// A node spawns k+1 children: for each exclusion child B_i the partial set
-// S accumulates the prefix {v_0..v_{i-1}} while v_i alone is excluded; the
-// include-all child B_k admits the whole ordering.  Children partition all
-// targets by *first excluded candidate*, so enumeration is complete and
-// duplicate-free.  Realised here as a single sweep that pushes one node into
-// S per step (so the incremental degree machinery from eba_opt still applies):
-//
-//   for idx, v_i in order:            // S already == nodeS ∪ {v_0..v_{idx-1}}
-//       exclude v_i  -> recurse       // child B_i
-//       restore v_i; push v_i -> S    // accumulate prefix for next sibling
-//   recurse                           // include-all child B_k
-//   pop the accumulated prefix
-//
-// Pruning — the paper's THREE rules, all applied per node in refine():
-//   Rule 1 (degree, §5.2): drop candidates / prune the node by adjusted degree;
-//   Rule 2 (size,   §5.2): prune once |S| reaches its size bound while infeasible;
-//   Rule 3 (diameter,§5.2): drop candidates too far from / disconnected from S.
-// A global form of Rule 1 (degree-core reduction) is also run at preprocessing
-// and is tightened whenever F' improves. Connectivity is automatic (every Cr
-// node is adjacent to S), so it is never checked.
-//
-// Margin pivot (§5.3, default ON; NO_PIVOT to ablate): a width-control candidate
-// ordering, NOT a separate rule. It picks the least-slack node p and front-loads
-// p's non-neighbours so the cumulative prefix drives p's in-S non-neighbour count
-// dbar_S(p) up to its tolerance dbar_max(p); the moment p saturates the sibling
-// loop is cut, bounding branching width. The saturation test it relies on,
-//   dbar_max(v) = s_max(v) - 1 - floor(s_max(v)^τ),  s_max(v)=max(1,min(⌊(d_a+1)^{1/τ}⌋,|R|))
-//   dbar_S(v)   = (|S|-1) - deg_in_S(v),
-// (prune when s_max(v) < |S| or dbar_S(v) > dbar_max(v)) is sound on its own —
-// S ⊆ H implies dbar_H(v) ≥ dbar_S(v) — and is checked in refine(). The pivot is
-// a pure reordering and never changes the returned maximum size.
-// ============================================================
+
 
 #ifdef TRACE_HIST
 long long g_hist[256];
 #endif
 
 #ifdef TRACE_WIDTH
-// Branching-width histogram (Appendix, Thm. "conditional bound below 2^n"):
-// g_width_hist[w] = number of CP-branching search nodes that explored exactly w
-// children (w = explored exclusion children + the include-all child B_k, if any).
-// Only candidate-branching nodes are counted (not leaves / pruned / the S=0 seed
-// loop), since the width-w recurrence T(mu) <= sum_{j=1}^{w} T(mu-j) of Thm. C.x
-// is stated for those nodes. Default OFF; does not alter the search itself.
+
 long long g_width_hist[256];
 #endif
 
@@ -88,16 +41,8 @@ struct CumState {
     std::vector<int>  local_adj_deg;  // d_a(v) = |adj[v] ∩ R|
     std::vector<int>  deg_in_S;       // |adj[v] ∩ S|
 
-    // Rule 3 (diameter pruning): dist_S[u] = max_{v∈S} sp_{G[H]}(u,v),
-    // the longest shortest-path from u to any S vertex within the induced
-    // subgraph G[H]. 0 when S=∅; INT_MAX when u is disconnected from S in G[H].
-    // Maintained incrementally (one BFS per pushToS, max-combined, undone on pop).
-    // NOTE: distances are NOT re-raised when a later scopeRemove shrinks G[H], so a
-    // stored finite dist_S[u] may underestimate the true sp in the reduced G[H].
-    // This only ever weakens Rule 3 (an underestimate prunes less), never
-    // over-prunes, so soundness holds; some disconnection prunes are just missed.
+    
     std::vector<int>  dist_S;
-    // BFS scratch reused via touched-list resets (bfs_d kept all-INT_MAX between calls).
     std::vector<int>  bfs_d, bfs_touched, bfs_queue;
 
     long long branches = 0;
@@ -120,12 +65,7 @@ struct CumState {
 
     int theta() const { return computeTheta(best_size, tau); }
 
-    // floor(x^{1/τ}), clamped to INT_MAX.
-    // With small τ the exponent 1/τ is large (e.g. τ=0.2, x=128 → 128^5 ≈ 3.4e10),
-    // which overflows int; casting an out-of-range double to int is UB. Every
-    // caller either caps the result by scope_size (≤ n ≤ INT_MAX) or compares it
-    // against |S| (≤ n), so saturating at INT_MAX is value-preserving here while
-    // removing the UB.
+    
     int floorRoot(int x) const {
         if (x <= 0) return 0;
         double r = std::floor(std::pow((double)x, 1.0 / tau));
@@ -202,9 +142,7 @@ struct CumState {
         return (long long)k + L + 1 + (long long)(L / 3) * (k - 2);
     }
 
-    // BFS from w within G[H] (in_scope vertices); update dist_S[u] = max(dist_S[u],
-    // sp(w,u)) for every u in `universe` (INT_MAX when w cannot reach u in G[H]).
-    // Records each raised value in dist_undo for exact restoration on pop.
+    
     void updateDistOnPush(int w, const std::vector<int>& universe,
                           std::vector<std::pair<int,int>>& dist_undo) {
         bfs_touched.clear();
@@ -231,42 +169,22 @@ struct CumState {
         for (int x : bfs_touched) bfs_d[x] = INT_MAX;  // reset scratch
     }
 
-    // Undo dist_S raises recorded at index >= `from` (LIFO).
     void restoreDist(std::vector<std::pair<int,int>>& dist_undo, int from) {
         for (int j = (int)dist_undo.size() - 1; j >= from; --j)
             dist_S[dist_undo[j].first] = dist_undo[j].second;
         dist_undo.resize(from);
     }
 
-    // refine: per-node pruning, all from the paper's three rules plus the §5.3
-    // pivot feasibility check —
-    //   Rule 1 (degree): drop candidates with d_a < θ and cascade; prune the node
-    //                    if any S vertex has d_a < θ;
-    //   Rule 3 (diameter): drop candidates too far from / disconnected from S;
-    //   Rule 2 (size): prune the node if |S| exceeds its size bound;
-    //   §5.3 saturation: prune the node if some S vertex already has more
-    //                    non-neighbours in S than any feasible flexi-clique tolerates.
-    // Mutates Cr/Cun (drops pruned candidates); records removals for undo.
-    // Returns false to prune the whole node.
+    
     bool refine(const std::vector<int>& S,
                 std::vector<int>& Cr, std::vector<int>& Cun,
                 std::vector<std::pair<int,int>>& deg_undo,
                 std::vector<int>& removed) {
-        // th is used by Rule 1 (degree) and Rule 3 (diameter); only unused when
-        // BOTH are ablated.
+        
 #if !defined(NO_RULE1) || !defined(NO_DIAMETER)
         int th = theta();
 #endif
 
-        // Initial removals: Rule 1 (low adjusted degree) + Rule 3 (diameter).
-        // Rule 3 (only when S≠∅) discards a candidate u that would force an
-        // infeasible subgraph given its distance du = dist_S[u] from S in G[H],
-        // via the two conditions of the diameter rule:
-        //   Rule 3(i):  n(θ,du) > |H|              (too many nodes needed to reach u)
-        //   Rule 3(ii): ⌊n(θ,du)^τ⌋ > min_{v∈S} d_a(v)  (would over-constrain some S vertex)
-        // du = INT_MAX (u disconnected from S in G[H]) is always pruned — this is
-        // what lets the rule delete unreachable candidates. Both conditions use the
-        // node's incoming |H| and min-degree, evaluated before any cascade.
 #ifndef NO_DIAMETER
         const bool Snon = !S.empty();
         const int  scope0 = (int)S.size() + (int)Cr.size() + (int)Cun.size();
@@ -283,16 +201,13 @@ struct CumState {
             bool rm = local_adj_deg[u] < th;                       // Rule 1
 #endif
 #ifndef NO_DIAMETER
-            if (!rm && Snon) {                                     // Rule 3 (diameter)
+            if (!rm && Snon) {                                     // Rule 2 (diameter)
                 int du = dist_S[u];
                 if (du == INT_MAX) rm = true;                     // disconnected from S
                 else {
                     long long nf = nFuncLL(th, du);
-                    if (nf > scope0) rm = true;                                       // Rule 3(i)
-                    // Rule 3(ii): ⌊nf^τ⌋ > minAdS  ⟺  nf^τ ≥ minAdS+1. Test the latter
-                    // form with a tolerance so double rounding of pow() across an
-                    // integer boundary (e.g. 4^0.79248 → 3.0 instead of 2.999…) can
-                    // only ever UNDER-prune, never falsely discard a valid extension.
+                    if (nf > scope0) rm = true;                                       // Rule 2(i)
+                    
                     else if (std::pow((double)nf, tau) >= (double)minAdS + 1.0 + 1e-6)
                         rm = true;
                 }
@@ -330,10 +245,7 @@ struct CumState {
             if (local_adj_deg[v] < th) return false;
 #endif
 
-        // Rule 2: size upper bound from min adjusted degree.
-        // F_max = ⌊(min_{v∈S} d_a(v) + 1)^{1/τ}⌋ is the largest size any flexi
-        // containing S can reach. Prune if |S| already exceeds it, OR |S| == F_max
-        // but S is not yet a valid flexi (it can no longer grow, so it never will).
+        
 #ifndef NO_RULE2
         if (!S.empty()) {
             int md = INT_MAX;
@@ -356,8 +268,7 @@ struct CumState {
         return true;
     }
 
-    // Classify the node's candidate universe into the child's (Cr, Cun) by
-    // current state: in-S / out-of-scope are skipped; deg_in_S>0 ⇒ reachable.
+
     void buildChildSets(const std::vector<int>& cand_uni,
                         std::vector<int>& childCr, std::vector<int>& childCun) {
         childCr.clear();
@@ -369,20 +280,7 @@ struct CumState {
         }
     }
 
-    // Candidate ordering for CP-branching = the margin pivot (§5.3, default ON).
-    //
-    // Pick the least-slack node p = argmin_{v∈S∪Cr} margin(v), where
-    //   margin(v) = dbar_max(v) − dbar_S(v)   (non-neighbour slack until v breaks).
-    // Branch ONLY on p (if p∈Cr) plus the first t = min(margin(p), |N̄(p)|)
-    // non-neighbours of p in Cr (ascending margin); every other candidate —
-    // notably p's neighbours — is NOT branched individually but left in Cr and
-    // deferred to the include-all child B_k and deeper recursion. By the Width
-    // Bound lemma this caps the exclusion children at ≈margin(p)+1: front-loading
-    // p's non-neighbours drives dbar_S(p) to dbar_max(p) so the saturation prune
-    // fires, and the deferred candidates cannot extend S without over-saturating
-    // p, so completeness (and the maximum) is preserved.
-    //
-    // NO_PIVOT (ablation) falls back to branching on the full Cr, degree-ordered.
+    
     std::vector<int> orderCr(const std::vector<int>& S,
                              const std::vector<int>& Cr,
                              const std::vector<int>& Cun, int scope_size) {
@@ -461,16 +359,9 @@ struct CumState {
             return;
         }
 
-        // Seed selection at S = ∅ (§2.5): each Cun vertex seeds one component,
-        // earlier seeds are excluded so every connected subgraph is enumerated
-        // exactly once by its lowest-ranked vertex.
         if (S.empty()) {
             std::vector<int> seeds = Cun;       // snapshot of refined Cun
-            // The root component enumeration dominates the search, so the candidate
-            // ordering ablation (default OFF) must order the seeds too, consistently
-            // with orderCr(). Every connected subgraph is still enumerated exactly
-            // once (by its first-processed seed), so the order affects efficiency,
-            // not correctness. Default build = adjusted-degree ascending (unchanged).
+            
 #if defined(RANDOM_ORDER)
             std::shuffle(seeds.begin(), seeds.end(), rng);
 #elif defined(HIGH_DEGREE_ORDER)
@@ -513,14 +404,6 @@ struct CumState {
         cand_uni.insert(cand_uni.end(), Cr.begin(), Cr.end());
         cand_uni.insert(cand_uni.end(), Cun.begin(), Cun.end());
 
-        // Sibling-monotonicity break (§5.2): across siblings S_0⊆S_1⊆…⊆S_k, so
-        // the partial set only grows. If the current S (= S_i) is already
-        // size-infeasible (Rule 2) or saturated, then every later sibling and the
-        // include-all child B_k contains it and is infeasible too — stop. Evaluated
-        // in the node's (un-excluded) scope, which is stable under prefix
-        // accumulation and conservative w.r.t. each child's smaller scope, so the
-        // break is sound. This is what bounds cumulative branching width: without
-        // it the size bound never bites (each child excludes only one candidate).
         auto siblingInfeasible = [&]() -> bool {
             int s_size = (int)S.size();
 #ifndef NO_RULE2
@@ -567,8 +450,6 @@ struct CumState {
         }
 
 #ifdef TRACE_WIDTH
-        // Width of this CP-branching node = explored exclusion children (`pushed`)
-        // plus the include-all child B_k iff the sibling break did not fire.
         {
             int wdt = pushed + (broke ? 0 : 1);
             ::g_width_hist[std::min(wdt, 255)]++;
@@ -600,7 +481,7 @@ void globalDegreePrune(const Graph& G, std::vector<bool>& active,
 }
 #endif
 
-} // namespace
+} 
 
 AlgoResult runEBACumulative(const Graph& G, double tau) {
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -615,9 +496,6 @@ AlgoResult runEBACumulative(const Graph& G, double tau) {
     CumState st(G, tau);
     std::vector<int> init_sol;
 #ifndef NO_WARMSTART
-    // Heuristic initialisation (identical to runEBA): best of FPA3 / NPA.
-    // NO_WARMSTART omits it so the branching comparison (R6-D3) isolates the
-    // branching scheme from the heuristic lower bound.
     AlgoResult fpa_res = runFPA3(G, tau);
     AlgoResult npa_res = runNPA(G, tau);
     init_sol = fpa_res.nodes;
@@ -636,7 +514,6 @@ AlgoResult runEBACumulative(const Graph& G, double tau) {
     globalDegreePrune(G, active, adeg, st.theta());
 #endif
 
-    // Modified Greedy++ on the pruned subgraph may improve the incumbent.
 #ifndef NO_WARMSTART
     {
         std::vector<int> mg = modifiedGreedyPlusPlus(G, tau, &active);
@@ -654,7 +531,7 @@ AlgoResult runEBACumulative(const Graph& G, double tau) {
 #endif
         }
     }
-#endif  // NO_WARMSTART
+#endif  
 
     std::vector<int> V_prime;
     for (int v = 0; v < G.n; ++v) if (active[v]) V_prime.push_back(v);
